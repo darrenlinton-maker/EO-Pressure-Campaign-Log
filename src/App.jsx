@@ -13,6 +13,22 @@ function formatDate(iso) {
 function copyToClipboard(text) {
   if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
 }
+function getInitials(email) {
+  if (!email) return "";
+  const name = email.split("@")[0];
+  const parts = name.split(/[._-]/);
+  if (parts.length >= 2) return (parts[0][0] + parts[1][0]).toUpperCase();
+  return name.substring(0, 2).toUpperCase();
+}
+function getDisplayName(user) {
+  if (!user) return "";
+  const meta = user.user_metadata;
+  if (meta?.full_name) return meta.full_name;
+  if (meta?.name) return meta.name;
+  const email = user.email || "";
+  const name = email.split("@")[0];
+  return name.split(/[._-]/).map(p => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+}
 
 function contactToRow(c) {
   return {
@@ -60,13 +76,132 @@ const TIERS = [
   { value: "2", label: "Tier 2 — Disengage", desc: "Abusive, end call per protocol" },
   { value: "3", label: "Tier 3 — Security", desc: "Threat made, contact police" },
 ];
-const EMPTY_FORM = {
-  campaign: "brs-2026", method: "Phone", callerName: "", callerLocation: "",
-  identified: true, source: "Constituent (organic)", register: "civil",
-  tier: "1", keyPhrases: "", notes: "", followUp: false, staffInitials: "",
-};
 
+// ============================================================
+// LOGIN SCREEN
+// ============================================================
+function LoginScreen({ onLogin }) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    try {
+      const { data, error: authError } = await supabase.auth.signInWithPassword({ email, password });
+      if (authError) throw authError;
+      onLogin(data.session);
+    } catch (err) {
+      setError(err.message === "Invalid login credentials"
+        ? "Invalid email or password. Contact your office administrator if you need access."
+        : err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={S.loginWrap}>
+      <div style={S.loginCard}>
+        <div style={S.loginHeader}>
+          <div style={S.logoMark}>EO</div>
+          <div>
+            <div style={S.loginTitle}>Electorate Office</div>
+            <div style={S.loginSubtitle}>Contact Logger</div>
+          </div>
+        </div>
+        <div style={S.loginDivider} />
+        <div style={S.loginLabel}>Sign in to continue</div>
+        <form onSubmit={handleSubmit}>
+          <div style={S.loginField}>
+            <label style={S.label}>Email</label>
+            <input
+              type="email"
+              style={S.input}
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@electorate.gov.au"
+              required
+              autoFocus
+              autoComplete="email"
+            />
+          </div>
+          <div style={S.loginField}>
+            <label style={S.label}>Password</label>
+            <input
+              type="password"
+              style={S.input}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="Enter your password"
+              required
+              autoComplete="current-password"
+            />
+          </div>
+          {error && <div style={S.loginError}>{error}</div>}
+          <button
+            type="submit"
+            style={{ ...S.submitBtn, width: "100%", marginTop: 16, opacity: loading ? 0.6 : 1 }}
+            disabled={loading}
+          >
+            {loading ? "Signing in…" : "Sign In"}
+          </button>
+        </form>
+        <div style={S.loginFooter}>
+          Contact your office administrator for login credentials.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// MAIN APP (wraps auth)
+// ============================================================
 export default function App() {
+  const [session, setSession] = useState(null);
+  const [authLoading, setAuthLoading] = useState(true);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (authLoading) {
+    return (
+      <div style={S.loadingWrap}>
+        <div style={S.loadingInner}>
+          <div style={S.logoMark}>EO</div>
+          <div style={S.loadingText}>Loading…</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return <LoginScreen onLogin={setSession} />;
+  }
+
+  return <MainApp session={session} />;
+}
+
+// ============================================================
+// MAIN APP CONTENT (authenticated)
+// ============================================================
+function MainApp({ session }) {
+  const user = session?.user;
+  const userInitials = getInitials(user?.email);
+  const userName = getDisplayName(user);
+
   const [contacts, setContacts] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
   const [playbookItems, setPlaybookItems] = useState([]);
@@ -80,6 +215,13 @@ export default function App() {
   const [editingPlaybookId, setEditingPlaybookId] = useState(null);
   const [editingPlaybookText, setEditingPlaybookText] = useState("");
   const [expandedScript, setExpandedScript] = useState(null);
+
+  const EMPTY_FORM = useMemo(() => ({
+    campaign: "brs-2026", method: "Phone", callerName: "", callerLocation: "",
+    identified: true, source: "Constituent (organic)", register: "civil",
+    tier: "1", keyPhrases: "", notes: "", followUp: false, staffInitials: userInitials,
+  }), [userInitials]);
+
   const [form, setForm] = useState(EMPTY_FORM);
   const [filterCampaign, setFilterCampaign] = useState("all");
   const [filterRegister, setFilterRegister] = useState("all");
@@ -107,7 +249,7 @@ export default function App() {
         setError(null);
       } catch (err) {
         console.error("Load error:", err);
-        setError("Could not connect to database. Check your Supabase configuration.");
+        setError("Could not load data. Check your database configuration.");
       } finally {
         setLoading(false);
       }
@@ -158,6 +300,10 @@ export default function App() {
 
   const updateField = (field, value) => setForm((f) => ({ ...f, [field]: value }));
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+  };
+
   const handleSubmit = async () => {
     setSyncing(true);
     const entry = {
@@ -193,10 +339,7 @@ export default function App() {
       if (error) throw error;
       setContacts((prev) => prev.filter((c) => c.id !== id));
       showToast("Deleted");
-    } catch (err) {
-      console.error(err);
-      showToast("Error deleting");
-    }
+    } catch (err) { console.error(err); showToast("Error deleting"); }
   };
 
   const handleEdit = (contact) => {
@@ -217,10 +360,7 @@ export default function App() {
       if (error) throw error;
       setCampaigns((prev) => [...prev, camp]);
       showToast("Campaign added");
-    } catch (err) {
-      console.error(err);
-      showToast("Error adding campaign");
-    }
+    } catch (err) { console.error(err); showToast("Error adding campaign"); }
   };
 
   const playbook = useMemo(() => ({
@@ -231,34 +371,22 @@ export default function App() {
 
   const savePlaybookEdit = async (section, id, newContent) => {
     try {
-      const { error } = await supabase.from("playbook").update({
-        content: newContent, updated_at: new Date().toISOString(),
-      }).eq("id", id);
+      const { error } = await supabase.from("playbook").update({ content: newContent, updated_at: new Date().toISOString() }).eq("id", id);
       if (error) throw error;
       setPlaybookItems((prev) => prev.map((p) => p.id === id ? { ...p, content: newContent } : p));
       setEditingPlaybookId(null);
       showToast("Playbook updated");
-    } catch (err) {
-      console.error(err);
-      showToast("Error saving");
-    }
+    } catch (err) { console.error(err); showToast("Error saving"); }
   };
 
   const addPlaybookItem = async (section, item) => {
-    const row = {
-      id: item.id, section, title: item.title, campaign: item.campaign || "",
-      tier: item.tier || "", subject: item.subject || "", content: item.content,
-      sort_order: playbookItems.filter((p) => p.section === section).length + 1,
-    };
+    const row = { id: item.id, section, title: item.title, campaign: item.campaign || "", tier: item.tier || "", subject: item.subject || "", content: item.content, sort_order: playbookItems.filter((p) => p.section === section).length + 1 };
     try {
       const { error } = await supabase.from("playbook").insert(row);
       if (error) throw error;
       setPlaybookItems((prev) => [...prev, rowToPlaybook(row)]);
       showToast("Added to playbook");
-    } catch (err) {
-      console.error(err);
-      showToast("Error adding");
-    }
+    } catch (err) { console.error(err); showToast("Error adding"); }
   };
 
   const deletePlaybookItem = async (section, id) => {
@@ -266,44 +394,25 @@ export default function App() {
       const { error } = await supabase.from("playbook").delete().eq("id", id);
       if (error) throw error;
       setPlaybookItems((prev) => prev.filter((p) => p.id !== id));
-      showToast("Removed from playbook");
-    } catch (err) {
-      console.error(err);
-      showToast("Error removing");
-    }
+      showToast("Removed");
+    } catch (err) { console.error(err); showToast("Error removing"); }
   };
 
   const exportCSV = () => {
     const headers = ["Timestamp","Campaign","Method","Caller Name","Location","Identified","Source","Register","Tier","Key Phrases","Notes","Follow-up","Staff"];
-    const rows = filteredContacts.map((c) => [
-      c.timestamp, campaigns.find((camp) => camp.id === c.campaign)?.name || c.campaign,
-      c.method, c.callerName, c.callerLocation, c.identified ? "Yes" : "No",
-      c.source, c.register, "Tier " + c.tier,
-      `"${(c.keyPhrases || "").replace(/"/g, '""')}"`,
-      `"${(c.notes || "").replace(/"/g, '""')}"`,
-      c.followUp ? "Yes" : "No", c.staffInitials,
-    ]);
+    const rows = filteredContacts.map((c) => [c.timestamp, campaigns.find((camp) => camp.id === c.campaign)?.name || c.campaign, c.method, c.callerName, c.callerLocation, c.identified ? "Yes" : "No", c.source, c.register, "Tier " + c.tier, `"${(c.keyPhrases || "").replace(/"/g, '""')}"`, `"${(c.notes || "").replace(/"/g, '""')}"`, c.followUp ? "Yes" : "No", c.staffInitials]);
     const csv = [headers, ...rows].map((r) => r.join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `eo-contacts-${new Date().toISOString().slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const a = document.createElement("a"); a.href = url; a.download = `eo-contacts-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); URL.revokeObjectURL(url);
   };
 
   const filteredContacts = useMemo(() => {
     let fc = contacts;
     if (filterCampaign !== "all") fc = fc.filter((c) => c.campaign === filterCampaign);
     if (filterRegister !== "all") fc = fc.filter((c) => c.register === filterRegister);
-    if (filterDate === "today") {
-      const today = new Date().toDateString();
-      fc = fc.filter((c) => new Date(c.timestamp).toDateString() === today);
-    } else if (filterDate === "week") {
-      const week = Date.now() - 7 * 86400000;
-      fc = fc.filter((c) => new Date(c.timestamp).getTime() > week);
-    }
+    if (filterDate === "today") { const today = new Date().toDateString(); fc = fc.filter((c) => new Date(c.timestamp).toDateString() === today); }
+    else if (filterDate === "week") { const week = Date.now() - 7 * 86400000; fc = fc.filter((c) => new Date(c.timestamp).getTime() > week); }
     return fc;
   }, [contacts, filterCampaign, filterRegister, filterDate]);
 
@@ -316,26 +425,17 @@ export default function App() {
     const bySource = SOURCES.map((s) => ({ source: s, count: weekContacts.filter((c) => c.source === s).length }));
     const byMethod = CONTACT_METHODS.map((m) => ({ method: m, count: weekContacts.filter((c) => c.method === m).length }));
     const phraseMap = {};
-    weekContacts.forEach((c) => {
-      if (c.keyPhrases) c.keyPhrases.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean).forEach((p) => { phraseMap[p] = (phraseMap[p] || 0) + 1; });
-    });
+    weekContacts.forEach((c) => { if (c.keyPhrases) c.keyPhrases.split(",").map((p) => p.trim().toLowerCase()).filter(Boolean).forEach((p) => { phraseMap[p] = (phraseMap[p] || 0) + 1; }); });
     const topPhrases = Object.entries(phraseMap).sort((a, b) => b[1] - a[1]).slice(0, 8);
     const tier2Plus = weekContacts.filter((c) => parseInt(c.tier) >= 2).length;
     const outsideElectorate = weekContacts.filter((c) => c.source === "Outside electorate").length;
     const needFollowUp = contacts.filter((c) => c.followUp).length;
     const dailyTrend = [];
-    for (let i = 6; i >= 0; i--) {
-      const d = new Date(Date.now() - i * 86400000);
-      dailyTrend.push({
-        date: d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric" }),
-        count: contacts.filter((c) => new Date(c.timestamp).toDateString() === d.toDateString()).length,
-      });
-    }
+    for (let i = 6; i >= 0; i--) { const d = new Date(Date.now() - i * 86400000); dailyTrend.push({ date: d.toLocaleDateString("en-AU", { weekday: "short", day: "numeric" }), count: contacts.filter((c) => new Date(c.timestamp).toDateString() === d.toDateString()).length }); }
     return { todayCount: todayContacts.length, weekCount: weekContacts.length, byRegister, bySource, byMethod, topPhrases, tier2Plus, outsideElectorate, needFollowUp, dailyTrend };
   }, [contacts]);
 
   const maxDaily = Math.max(...stats.dailyTrend.map((d) => d.count), 1);
-
   const navItems = [
     { key: "log", label: "Log Contact", icon: "+" },
     { key: "playbook", label: "Playbook", icon: "📋" },
@@ -350,24 +450,8 @@ export default function App() {
   ];
   const currentPBSection = playbookSections.find((s) => s.key === playbookTab);
 
-  if (loading) return (
-    <div style={S.loadingWrap}>
-      <div style={S.loadingInner}>
-        <div style={S.logoMark}>EO</div>
-        <div style={S.loadingText}>Connecting to database…</div>
-      </div>
-    </div>
-  );
-
-  if (error) return (
-    <div style={S.loadingWrap}>
-      <div style={S.errorBox}>
-        <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Connection Error</div>
-        <div style={{ marginBottom: 12 }}>{error}</div>
-        <button style={S.submitBtn} onClick={() => window.location.reload()}>Retry</button>
-      </div>
-    </div>
-  );
+  if (loading) return <div style={S.loadingWrap}><div style={S.loadingInner}><div style={S.logoMark}>EO</div><div style={S.loadingText}>Loading data…</div></div></div>;
+  if (error) return <div style={S.loadingWrap}><div style={S.errorBox}><div style={{ fontSize: 16, fontWeight: 700, marginBottom: 8 }}>Error</div><div style={{ marginBottom: 12 }}>{error}</div><button style={S.submitBtn} onClick={() => window.location.reload()}>Retry</button></div></div>;
 
   return (
     <div style={S.container}>
@@ -379,136 +463,63 @@ export default function App() {
           <div>
             <div style={S.headerTitle}>Electorate Office Contact Logger</div>
             <div style={S.headerSub}>
-              Pressure Campaign Tracking & Response System
-              {syncing && <span style={S.syncBadge}> Saving…</span>}
-              {!syncing && <span style={S.liveBadge}> ● Live</span>}
+              {syncing ? <span style={S.syncBadge}>Saving…</span> : <span style={S.liveBadge}>● Live</span>}
             </div>
           </div>
         </div>
         <div style={S.headerRight}>
           <div style={S.statPill}><span style={S.statNum}>{stats.todayCount}</span> today</div>
-          <div style={{ ...S.statPill, ...(stats.tier2Plus > 0 ? S.statPillWarn : {}) }}>
-            <span style={S.statNum}>{stats.tier2Plus}</span> T2+
+          <div style={{ ...S.statPill, ...(stats.tier2Plus > 0 ? S.statPillWarn : {}) }}><span style={S.statNum}>{stats.tier2Plus}</span> T2+</div>
+          <div style={S.userPill}>
+            <div style={S.userAvatar}>{userInitials}</div>
+            <span style={S.userName}>{userName}</span>
+            <button style={S.logoutBtn} onClick={handleLogout} title="Sign out">✕</button>
           </div>
         </div>
       </div>
 
       <div style={S.nav}>
         {navItems.map((tab) => (
-          <button key={tab.key}
-            onClick={() => { setView(tab.key); if (tab.key !== "log") { setEditingId(null); setForm(EMPTY_FORM); } }}
+          <button key={tab.key} onClick={() => { setView(tab.key); if (tab.key !== "log") { setEditingId(null); setForm(EMPTY_FORM); } }}
             style={{ ...S.navBtn, ...(view === tab.key ? S.navBtnActive : {}) }}>
             <span style={S.navIcon}>{tab.icon}</span> {tab.label}
           </button>
         ))}
       </div>
 
+      {/* LOG */}
       {view === "log" && (
         <div style={S.card} className="card-anim">
-          <div style={S.formHeader}>
-            {editingId ? "Edit Contact" : "Log New Contact"}
-            <span style={S.formHeaderHint}>Target: under 30 seconds</span>
-          </div>
+          <div style={S.formHeader}>{editingId ? "Edit Contact" : "Log New Contact"}<span style={S.formHeaderHint}>Target: under 30 seconds</span></div>
           <div style={S.formGrid} className="form-grid-responsive">
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Campaign</label>
-              <select style={S.select} value={form.campaign} onChange={(e) => updateField("campaign", e.target.value)}>
-                {campaigns.filter((c) => c.active).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}
-              </select>
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Contact Method</label>
-              <div style={S.chipRow}>
-                {CONTACT_METHODS.map((m) => (
-                  <button key={m} onClick={() => updateField("method", m)}
-                    style={{ ...S.chip, ...(form.method === m ? S.chipActive : {}) }}>{m}</button>
-                ))}
-              </div>
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Caller / Sender Name</label>
-              <input style={S.input} value={form.callerName} onChange={(e) => updateField("callerName", e.target.value)} placeholder="Leave blank if refused" />
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Location / Town</label>
-              <input style={S.input} value={form.callerLocation} onChange={(e) => updateField("callerLocation", e.target.value)} placeholder="e.g. Echuca, Tatura" />
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Identified themselves?</label>
-              <div style={S.chipRow}>
-                <button onClick={() => updateField("identified", true)} style={{ ...S.chip, ...(form.identified ? S.chipActive : {}) }}>Yes</button>
-                <button onClick={() => updateField("identified", false)} style={{ ...S.chip, ...(!form.identified ? S.chipActiveWarn : {}) }}>Refused</button>
-              </div>
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Source Assessment</label>
-              <select style={S.select} value={form.source} onChange={(e) => updateField("source", e.target.value)}>
-                {SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}
-              </select>
-            </div>
-            <div style={{ ...S.fieldGroup, ...S.fieldHL }}>
-              <label style={S.label}>Emotional Register</label>
-              <div style={S.chipRow}>
-                {REGISTERS.map((r) => (
-                  <button key={r.value} onClick={() => updateField("register", r.value)}
-                    style={{ ...S.chip, ...(form.register === r.value ? { background: r.bg, color: r.color, borderColor: r.color, fontWeight: 700 } : {}) }}>
-                    {r.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div style={{ ...S.fieldGroup, ...S.fieldHL }}>
-              <label style={S.label}>Response Tier</label>
-              {TIERS.map((t) => (
-                <label key={t.value} style={{ ...S.tierOpt, ...(form.tier === t.value ? S.tierOptActive : {}) }} onClick={() => updateField("tier", t.value)}>
-                  <input type="radio" name="tier" checked={form.tier === t.value} onChange={() => {}} style={{ display: "none" }} />
-                  <span style={S.tierLabel}>{t.label}</span>
-                  <span style={S.tierDesc}>{t.desc}</span>
-                </label>
-              ))}
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Key Phrases Used <span style={S.labelH}>(comma-separated)</span></label>
-              <input style={S.input} value={form.keyPhrases} onChange={(e) => updateField("keyPhrases", e.target.value)} placeholder='"$300 million", "abandon our heroes"' />
-            </div>
-            <div style={S.fieldGroup}>
-              <label style={S.label}>Staff Initials</label>
-              <input style={{ ...S.input, maxWidth: 120 }} value={form.staffInitials} onChange={(e) => updateField("staffInitials", e.target.value.toUpperCase())} placeholder="e.g. JM" maxLength={4} />
-            </div>
-            <div style={{ ...S.fieldGroup, gridColumn: "1 / -1" }}>
-              <label style={S.label}>Notes <span style={S.labelH}>(one line is fine)</span></label>
-              <textarea style={{ ...S.input, minHeight: 52, resize: "vertical" }} value={form.notes} onChange={(e) => updateField("notes", e.target.value)} placeholder="Brief summary" />
-            </div>
+            <div style={S.fieldGroup}><label style={S.label}>Campaign</label><select style={S.select} value={form.campaign} onChange={(e) => updateField("campaign", e.target.value)}>{campaigns.filter((c) => c.active).map((c) => (<option key={c.id} value={c.id}>{c.name}</option>))}</select></div>
+            <div style={S.fieldGroup}><label style={S.label}>Contact Method</label><div style={S.chipRow}>{CONTACT_METHODS.map((m) => (<button key={m} onClick={() => updateField("method", m)} style={{ ...S.chip, ...(form.method === m ? S.chipActive : {}) }}>{m}</button>))}</div></div>
+            <div style={S.fieldGroup}><label style={S.label}>Caller / Sender Name</label><input style={S.input} value={form.callerName} onChange={(e) => updateField("callerName", e.target.value)} placeholder="Leave blank if refused" /></div>
+            <div style={S.fieldGroup}><label style={S.label}>Location / Town</label><input style={S.input} value={form.callerLocation} onChange={(e) => updateField("callerLocation", e.target.value)} placeholder="e.g. Echuca, Tatura" /></div>
+            <div style={S.fieldGroup}><label style={S.label}>Identified?</label><div style={S.chipRow}><button onClick={() => updateField("identified", true)} style={{ ...S.chip, ...(form.identified ? S.chipActive : {}) }}>Yes</button><button onClick={() => updateField("identified", false)} style={{ ...S.chip, ...(!form.identified ? S.chipActiveWarn : {}) }}>Refused</button></div></div>
+            <div style={S.fieldGroup}><label style={S.label}>Source</label><select style={S.select} value={form.source} onChange={(e) => updateField("source", e.target.value)}>{SOURCES.map((s) => <option key={s} value={s}>{s}</option>)}</select></div>
+            <div style={{ ...S.fieldGroup, ...S.fieldHL }}><label style={S.label}>Emotional Register</label><div style={S.chipRow}>{REGISTERS.map((r) => (<button key={r.value} onClick={() => updateField("register", r.value)} style={{ ...S.chip, ...(form.register === r.value ? { background: r.bg, color: r.color, borderColor: r.color, fontWeight: 700 } : {}) }}>{r.label}</button>))}</div></div>
+            <div style={{ ...S.fieldGroup, ...S.fieldHL }}><label style={S.label}>Response Tier</label>{TIERS.map((t) => (<label key={t.value} style={{ ...S.tierOpt, ...(form.tier === t.value ? S.tierOptActive : {}) }} onClick={() => updateField("tier", t.value)}><input type="radio" name="tier" checked={form.tier === t.value} onChange={() => {}} style={{ display: "none" }} /><span style={S.tierLabel}>{t.label}</span><span style={S.tierDesc}>{t.desc}</span></label>))}</div>
+            <div style={S.fieldGroup}><label style={S.label}>Key Phrases <span style={S.labelH}>(comma-separated)</span></label><input style={S.input} value={form.keyPhrases} onChange={(e) => updateField("keyPhrases", e.target.value)} placeholder='"$300 million", "abandon"' /></div>
+            <div style={S.fieldGroup}><label style={S.label}>Staff Initials</label><input style={{ ...S.input, maxWidth: 120 }} value={form.staffInitials} onChange={(e) => updateField("staffInitials", e.target.value.toUpperCase())} placeholder={userInitials} maxLength={4} /></div>
+            <div style={{ ...S.fieldGroup, gridColumn: "1 / -1" }}><label style={S.label}>Notes <span style={S.labelH}>(one line is fine)</span></label><textarea style={{ ...S.input, minHeight: 52, resize: "vertical" }} value={form.notes} onChange={(e) => updateField("notes", e.target.value)} placeholder="Brief summary" /></div>
             <div style={{ ...S.fieldGroup, gridColumn: "1 / -1", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-              <label style={{ ...S.chipRow, gap: 8, cursor: "pointer" }} onClick={() => updateField("followUp", !form.followUp)}>
-                <span style={{ ...S.checkbox, ...(form.followUp ? S.checkboxChecked : {}) }}>{form.followUp ? "✓" : ""}</span>
-                <span style={S.label}>Requires follow-up from MP</span>
-              </label>
+              <label style={{ ...S.chipRow, gap: 8, cursor: "pointer" }} onClick={() => updateField("followUp", !form.followUp)}><span style={{ ...S.checkbox, ...(form.followUp ? S.checkboxChecked : {}) }}>{form.followUp ? "✓" : ""}</span><span style={S.label}>Requires follow-up from MP</span></label>
               <div style={{ display: "flex", gap: 8 }}>
                 {editingId && <button style={S.cancelBtn} onClick={() => { setEditingId(null); setForm(EMPTY_FORM); }}>Cancel</button>}
-                <button style={{ ...S.submitBtn, opacity: syncing ? 0.6 : 1 }} onClick={handleSubmit} disabled={syncing}>
-                  {syncing ? "Saving…" : editingId ? "Update" : "Log Contact"}
-                </button>
+                <button style={{ ...S.submitBtn, opacity: syncing ? 0.6 : 1 }} onClick={handleSubmit} disabled={syncing}>{syncing ? "Saving…" : editingId ? "Update" : "Log Contact"}</button>
               </div>
             </div>
           </div>
-          {form.tier === "3" && <div style={S.tier3Warn}><strong>TIER 3 PROTOCOL:</strong> End the interaction. Contact local police. Document everything immediately. Brief CoS / MP.</div>}
-          <div style={S.scriptLink} onClick={() => { setView("playbook"); setPlaybookTab("phone"); }}>
-            📋 View {form.tier === "3" ? "Tier 3 security" : form.tier === "2" ? "Tier 2 disengagement" : "Tier 1 response"} script in Playbook →
-          </div>
+          {form.tier === "3" && <div style={S.tier3Warn}><strong>TIER 3 PROTOCOL:</strong> End the interaction. Contact local police. Document everything. Brief CoS / MP.</div>}
+          <div style={S.scriptLink} onClick={() => { setView("playbook"); setPlaybookTab("phone"); }}>📋 View {form.tier === "3" ? "Tier 3 security" : form.tier === "2" ? "Tier 2 disengagement" : "Tier 1 response"} script in Playbook →</div>
         </div>
       )}
 
+      {/* PLAYBOOK */}
       {view === "playbook" && (
         <div>
-          <div style={S.pbNav}>
-            {playbookSections.map((s) => (
-              <button key={s.key} onClick={() => { setPlaybookTab(s.key); setEditingPlaybookId(null); }}
-                style={{ ...S.pbNavBtn, ...(playbookTab === s.key ? S.pbNavBtnActive : {}) }}>
-                {s.label}<span style={S.pbNavCount}>{s.data.length}</span>
-              </button>
-            ))}
-          </div>
+          <div style={S.pbNav}>{playbookSections.map((s) => (<button key={s.key} onClick={() => { setPlaybookTab(s.key); setEditingPlaybookId(null); }} style={{ ...S.pbNavBtn, ...(playbookTab === s.key ? S.pbNavBtnActive : {}) }}>{s.label}<span style={S.pbNavCount}>{s.data.length}</span></button>))}</div>
           {currentPBSection.data.map((item) => {
             const isExpanded = expandedScript === item.id;
             const isEditing = editingPlaybookId === item.id;
@@ -517,41 +528,19 @@ export default function App() {
             return (
               <div key={item.id} style={S.pbCard}>
                 <div style={S.pbCardHeader} onClick={() => setExpandedScript(isExpanded ? null : item.id)}>
-                  <div style={S.pbCardTitleRow}>
-                    <span style={S.pbCardTitle}>{item.title}</span>
-                    <div style={S.pbCardBadges}>
-                      {campName && <span style={S.pbCampBadge}>{campName}</span>}
-                      {tierInfo && <span style={S.pbTierBadge}>Tier {item.tier}</span>}
-                    </div>
-                  </div>
+                  <div style={S.pbCardTitleRow}><span style={S.pbCardTitle}>{item.title}</span><div style={S.pbCardBadges}>{campName && <span style={S.pbCampBadge}>{campName}</span>}{tierInfo && <span style={S.pbTierBadge}>Tier {item.tier}</span>}</div></div>
                   <span style={{ ...S.pbChevron, transform: isExpanded ? "rotate(180deg)" : "rotate(0)" }}>▾</span>
                 </div>
-                {isExpanded && (
-                  <div style={S.pbCardBody}>
-                    {item.subject && <div style={S.pbSubject}>Subject: <strong>{item.subject}</strong></div>}
-                    {isEditing ? (
-                      <div>
-                        <textarea style={S.pbEditArea} value={editingPlaybookText} onChange={(e) => setEditingPlaybookText(e.target.value)} />
-                        <div style={S.pbEditActions}>
-                          <button style={S.submitBtn} onClick={() => savePlaybookEdit(currentPBSection.section, item.id, editingPlaybookText)}>Save Changes</button>
-                          <button style={S.cancelBtn} onClick={() => setEditingPlaybookId(null)}>Cancel</button>
-                        </div>
-                      </div>
-                    ) : (
-                      <pre style={S.pbContent}>{item.content}</pre>
-                    )}
-                    {!isEditing && (
-                      <div style={S.pbActions}>
-                        <button style={S.pbActionBtn} onClick={() => { copyToClipboard(item.content); showToast("Copied to clipboard"); }}>📋 Copy Text</button>
-                        {playbookTab === "email" && item.subject && (
-                          <button style={S.pbActionBtn} onClick={() => { copyToClipboard(`Subject: ${item.subject}\n\n${item.content}`); showToast("Email copied with subject"); }}>✉️ Copy with Subject</button>
-                        )}
-                        <button style={S.pbActionBtn} onClick={() => { setEditingPlaybookId(item.id); setEditingPlaybookText(item.content); }}>✏️ Edit</button>
-                        <button style={{ ...S.pbActionBtn, color: "#991b1b" }} onClick={() => deletePlaybookItem(currentPBSection.section, item.id)}>🗑️ Delete</button>
-                      </div>
-                    )}
-                  </div>
-                )}
+                {isExpanded && (<div style={S.pbCardBody}>
+                  {item.subject && <div style={S.pbSubject}>Subject: <strong>{item.subject}</strong></div>}
+                  {isEditing ? (<div><textarea style={S.pbEditArea} value={editingPlaybookText} onChange={(e) => setEditingPlaybookText(e.target.value)} /><div style={S.pbEditActions}><button style={S.submitBtn} onClick={() => savePlaybookEdit(currentPBSection.section, item.id, editingPlaybookText)}>Save</button><button style={S.cancelBtn} onClick={() => setEditingPlaybookId(null)}>Cancel</button></div></div>) : (<pre style={S.pbContent}>{item.content}</pre>)}
+                  {!isEditing && (<div style={S.pbActions}>
+                    <button style={S.pbActionBtn} onClick={() => { copyToClipboard(item.content); showToast("Copied"); }}>📋 Copy</button>
+                    {playbookTab === "email" && item.subject && <button style={S.pbActionBtn} onClick={() => { copyToClipboard(`Subject: ${item.subject}\n\n${item.content}`); showToast("Email copied"); }}>✉️ Copy with Subject</button>}
+                    <button style={S.pbActionBtn} onClick={() => { setEditingPlaybookId(item.id); setEditingPlaybookText(item.content); }}>✏️ Edit</button>
+                    <button style={{ ...S.pbActionBtn, color: "#991b1b" }} onClick={() => deletePlaybookItem(currentPBSection.section, item.id)}>🗑️ Delete</button>
+                  </div>)}
+                </div>)}
               </div>
             );
           })}
@@ -559,11 +548,8 @@ export default function App() {
             <div style={S.label}>Add New {playbookTab === "phone" ? "Phone Script" : playbookTab === "email" ? "Email Template" : "Talking Points"}</div>
             <input id="pb-title" style={{ ...S.input, marginTop: 8, marginBottom: 8 }} placeholder="Title" />
             {playbookTab === "email" && <input id="pb-subject" style={{ ...S.input, marginBottom: 8 }} placeholder="Email subject line" />}
-            <select id="pb-campaign" style={{ ...S.select, marginBottom: 8, width: "100%" }}>
-              <option value="">No specific campaign (general use)</option>
-              {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-            </select>
-            <textarea id="pb-content" style={{ ...S.input, minHeight: 100, resize: "vertical" }} placeholder="Content — this is what staff will see and copy" />
+            <select id="pb-campaign" style={{ ...S.select, marginBottom: 8, width: "100%" }}><option value="">No specific campaign</option>{campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+            <textarea id="pb-content" style={{ ...S.input, minHeight: 100, resize: "vertical" }} placeholder="Content" />
             <button style={{ ...S.submitBtn, marginTop: 10 }} onClick={() => {
               const title = document.getElementById("pb-title").value.trim();
               const content = document.getElementById("pb-content").value.trim();
@@ -571,190 +557,84 @@ export default function App() {
               const subject = playbookTab === "email" ? document.getElementById("pb-subject")?.value?.trim() || "" : undefined;
               if (!title || !content) { showToast("Title and content required"); return; }
               addPlaybookItem(currentPBSection.section, { id: generateId(), title, content, campaign, ...(subject !== undefined ? { subject } : {}) });
-              document.getElementById("pb-title").value = "";
-              document.getElementById("pb-content").value = "";
+              document.getElementById("pb-title").value = ""; document.getElementById("pb-content").value = "";
               if (document.getElementById("pb-subject")) document.getElementById("pb-subject").value = "";
             }}>Add to Playbook</button>
           </div>
         </div>
       )}
 
+      {/* LIST */}
       {view === "list" && (
         <div>
           <div style={S.listHeader}>
             <div style={S.filterRow}>
-              <select style={S.filterSel} value={filterCampaign} onChange={(e) => setFilterCampaign(e.target.value)}>
-                <option value="all">All campaigns</option>
-                {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-              </select>
-              <select style={S.filterSel} value={filterRegister} onChange={(e) => setFilterRegister(e.target.value)}>
-                <option value="all">All registers</option>
-                {REGISTERS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-              </select>
-              <select style={S.filterSel} value={filterDate} onChange={(e) => setFilterDate(e.target.value)}>
-                <option value="all">All time</option>
-                <option value="today">Today</option>
-                <option value="week">Last 7 days</option>
-              </select>
+              <select style={S.filterSel} value={filterCampaign} onChange={(e) => setFilterCampaign(e.target.value)}><option value="all">All campaigns</option>{campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+              <select style={S.filterSel} value={filterRegister} onChange={(e) => setFilterRegister(e.target.value)}><option value="all">All registers</option>{REGISTERS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}</select>
+              <select style={S.filterSel} value={filterDate} onChange={(e) => setFilterDate(e.target.value)}><option value="all">All time</option><option value="today">Today</option><option value="week">Last 7 days</option></select>
               <button style={S.exportBtn} onClick={exportCSV}>Export CSV</button>
             </div>
             <div style={S.listCount}>{filteredContacts.length} contact{filteredContacts.length !== 1 ? "s" : ""}</div>
           </div>
-          {filteredContacts.length === 0 ? (
-            <div style={S.emptyState}>No contacts match these filters.</div>
-          ) : (
-            <div style={S.contactList}>
-              {filteredContacts.map((c) => {
-                const reg = REGISTERS.find((r) => r.value === c.register);
-                const campName = campaigns.find((camp) => camp.id === c.campaign)?.name || c.campaign;
-                return (
-                  <div key={c.id} style={S.contactCard}>
-                    <div style={S.cardTop}>
-                      <div style={S.cardMeta}>
-                        <span style={{ ...S.regBadge, background: reg?.bg, color: reg?.color }}>{reg?.label}</span>
-                        <span style={S.tierBadge}>Tier {c.tier}</span>
-                        <span style={S.methodBadge}>{c.method}</span>
-                        {c.followUp && <span style={S.followUpBadge}>Follow-up</span>}
-                      </div>
-                      <div style={S.cardActions}>
-                        <button style={S.cardActBtn} onClick={() => handleEdit(c)}>Edit</button>
-                        <button style={{ ...S.cardActBtn, color: "#991b1b" }} onClick={() => handleDelete(c.id)}>Delete</button>
-                      </div>
-                    </div>
-                    <div style={S.cardBody}>
-                      <div style={S.cardName}>{c.callerName || "Unidentified"}{c.callerLocation ? ` — ${c.callerLocation}` : ""}</div>
-                      {c.notes && <div style={S.cardNotes}>{c.notes}</div>}
-                      {c.keyPhrases && <div style={S.cardPhrases}>Phrases: {c.keyPhrases}</div>}
-                    </div>
-                    <div style={S.cardFooter}>
-                      <span>{formatDate(c.timestamp)}</span>
-                      <span>{campName}</span>
-                      <span>Source: {c.source}</span>
-                      {c.staffInitials && <span>Staff: {c.staffInitials}</span>}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+          {filteredContacts.length === 0 ? <div style={S.emptyState}>No contacts match these filters.</div> : (
+            <div style={S.contactList}>{filteredContacts.map((c) => {
+              const reg = REGISTERS.find((r) => r.value === c.register);
+              const campName = campaigns.find((camp) => camp.id === c.campaign)?.name || c.campaign;
+              return (<div key={c.id} style={S.contactCard}>
+                <div style={S.cardTop}><div style={S.cardMeta}><span style={{ ...S.regBadge, background: reg?.bg, color: reg?.color }}>{reg?.label}</span><span style={S.tierBadge}>Tier {c.tier}</span><span style={S.methodBadge}>{c.method}</span>{c.followUp && <span style={S.followUpBadge}>Follow-up</span>}</div><div style={S.cardActions}><button style={S.cardActBtn} onClick={() => handleEdit(c)}>Edit</button><button style={{ ...S.cardActBtn, color: "#991b1b" }} onClick={() => handleDelete(c.id)}>Delete</button></div></div>
+                <div style={S.cardBody}><div style={S.cardName}>{c.callerName || "Unidentified"}{c.callerLocation ? ` — ${c.callerLocation}` : ""}</div>{c.notes && <div style={S.cardNotes}>{c.notes}</div>}{c.keyPhrases && <div style={S.cardPhrases}>Phrases: {c.keyPhrases}</div>}</div>
+                <div style={S.cardFooter}><span>{formatDate(c.timestamp)}</span><span>{campName}</span><span>Source: {c.source}</span>{c.staffInitials && <span>Staff: {c.staffInitials}</span>}</div>
+              </div>);
+            })}</div>
           )}
         </div>
       )}
 
+      {/* DASHBOARD */}
       {view === "dashboard" && (
         <div>
           <div style={S.dashTitle}>7-Day Overview</div>
           <div style={S.dashStatRow} className="stat-row-responsive">
-            {[
-              { n: stats.weekCount, l: "Contacts this week" },
-              { n: stats.todayCount, l: "Contacts today" },
-              { n: stats.tier2Plus, l: "Tier 2+ incidents", warn: stats.tier2Plus > 0 },
-              { n: stats.outsideElectorate, l: "Outside electorate" },
-              { n: stats.needFollowUp, l: "Pending follow-ups", info: stats.needFollowUp > 0 },
-            ].map((s, i) => (
-              <div key={i} style={{ ...S.dashStatCard, ...(s.warn ? { borderColor: "#c2410c" } : s.info ? { borderColor: "#1d4ed8" } : {}) }}>
-                <div style={{ ...S.dashStatNum, ...(s.warn ? { color: "#c2410c" } : s.info ? { color: "#1d4ed8" } : {}) }}>{s.n}</div>
-                <div style={S.dashStatLabel}>{s.l}</div>
-              </div>
+            {[{ n: stats.weekCount, l: "This week" }, { n: stats.todayCount, l: "Today" }, { n: stats.tier2Plus, l: "Tier 2+", warn: stats.tier2Plus > 0 }, { n: stats.outsideElectorate, l: "Outside electorate" }, { n: stats.needFollowUp, l: "Follow-ups", info: stats.needFollowUp > 0 }].map((s, i) => (
+              <div key={i} style={{ ...S.dashStatCard, ...(s.warn ? { borderColor: "#c2410c" } : s.info ? { borderColor: "#1d4ed8" } : {}) }}><div style={{ ...S.dashStatNum, ...(s.warn ? { color: "#c2410c" } : s.info ? { color: "#1d4ed8" } : {}) }}>{s.n}</div><div style={S.dashStatLabel}>{s.l}</div></div>
             ))}
           </div>
-          <div style={S.dashSection}>
-            <div style={S.dashSecTitle}>Daily Volume</div>
-            <div style={S.barChart}>
-              {stats.dailyTrend.map((d, i) => (
-                <div key={i} style={S.barCol}>
-                  <div style={S.barCount}>{d.count}</div>
-                  <div style={{ ...S.bar, height: `${Math.max((d.count / maxDaily) * 120, 2)}px` }} />
-                  <div style={S.barLabel}>{d.date}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+          <div style={S.dashSection}><div style={S.dashSecTitle}>Daily Volume</div><div style={S.barChart}>{stats.dailyTrend.map((d, i) => (<div key={i} style={S.barCol}><div style={S.barCount}>{d.count}</div><div style={{ ...S.bar, height: `${Math.max((d.count / maxDaily) * 120, 2)}px` }} /><div style={S.barLabel}>{d.date}</div></div>))}</div></div>
           <div style={S.dashGrid} className="dash-grid-responsive">
-            <div style={S.dashSection}>
-              <div style={S.dashSecTitle}>By Register</div>
-              {stats.byRegister.map((r) => (
-                <div key={r.value} style={S.breakdownRow}>
-                  <span style={{ ...S.regDot, background: r.color }} />
-                  <span style={S.bdLabel}>{r.label}</span>
-                  <span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (r.count / stats.weekCount) * 100 : 0}%`, background: r.color }} /></span>
-                  <span style={S.bdCount}>{r.count}</span>
-                </div>
-              ))}
-            </div>
-            <div style={S.dashSection}>
-              <div style={S.dashSecTitle}>By Source</div>
-              {stats.bySource.filter((s) => s.count > 0).map((s) => (
-                <div key={s.source} style={S.breakdownRow}>
-                  <span style={S.bdLabel}>{s.source}</span>
-                  <span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (s.count / stats.weekCount) * 100 : 0}%`, background: "#475569" }} /></span>
-                  <span style={S.bdCount}>{s.count}</span>
-                </div>
-              ))}
-              {stats.bySource.every((s) => s.count === 0) && <div style={S.emptyMini}>No data</div>}
-            </div>
-            <div style={S.dashSection}>
-              <div style={S.dashSecTitle}>Recurring Phrases</div>
-              {stats.topPhrases.length > 0 ? stats.topPhrases.map(([p, c]) => (
-                <div key={p} style={S.phraseRow}><span style={S.phraseText}>"{p}"</span><span style={S.phraseCount}>×{c}</span></div>
-              )) : <div style={S.emptyMini}>No phrases logged</div>}
-              <div style={S.phraseHint}>Track these to identify coordinated campaigns</div>
-            </div>
-            <div style={S.dashSection}>
-              <div style={S.dashSecTitle}>By Method</div>
-              {stats.byMethod.filter((m) => m.count > 0).map((m) => (
-                <div key={m.method} style={S.breakdownRow}>
-                  <span style={S.bdLabel}>{m.method}</span>
-                  <span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (m.count / stats.weekCount) * 100 : 0}%`, background: "#6366f1" }} /></span>
-                  <span style={S.bdCount}>{m.count}</span>
-                </div>
-              ))}
-              {stats.byMethod.every((m) => m.count === 0) && <div style={S.emptyMini}>No data</div>}
-            </div>
+            <div style={S.dashSection}><div style={S.dashSecTitle}>By Register</div>{stats.byRegister.map((r) => (<div key={r.value} style={S.breakdownRow}><span style={{ ...S.regDot, background: r.color }} /><span style={S.bdLabel}>{r.label}</span><span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (r.count / stats.weekCount) * 100 : 0}%`, background: r.color }} /></span><span style={S.bdCount}>{r.count}</span></div>))}</div>
+            <div style={S.dashSection}><div style={S.dashSecTitle}>By Source</div>{stats.bySource.filter((s) => s.count > 0).map((s) => (<div key={s.source} style={S.breakdownRow}><span style={S.bdLabel}>{s.source}</span><span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (s.count / stats.weekCount) * 100 : 0}%`, background: "#475569" }} /></span><span style={S.bdCount}>{s.count}</span></div>))}{stats.bySource.every((s) => s.count === 0) && <div style={S.emptyMini}>No data</div>}</div>
+            <div style={S.dashSection}><div style={S.dashSecTitle}>Recurring Phrases</div>{stats.topPhrases.length > 0 ? stats.topPhrases.map(([p, c]) => (<div key={p} style={S.phraseRow}><span style={S.phraseText}>"{p}"</span><span style={S.phraseCount}>×{c}</span></div>)) : <div style={S.emptyMini}>No phrases</div>}<div style={S.phraseHint}>Track to identify coordinated campaigns</div></div>
+            <div style={S.dashSection}><div style={S.dashSecTitle}>By Method</div>{stats.byMethod.filter((m) => m.count > 0).map((m) => (<div key={m.method} style={S.breakdownRow}><span style={S.bdLabel}>{m.method}</span><span style={S.bdBar}><span style={{ ...S.bdFill, width: `${stats.weekCount ? (m.count / stats.weekCount) * 100 : 0}%`, background: "#6366f1" }} /></span><span style={S.bdCount}>{m.count}</span></div>))}{stats.byMethod.every((m) => m.count === 0) && <div style={S.emptyMini}>No data</div>}</div>
           </div>
-          <div style={S.briefingBox}>
-            <div style={S.briefingTitle}>MP Briefing Summary</div>
-            <div style={S.briefingText}>
-              This week: {stats.weekCount} contacts. {stats.tier2Plus > 0 ? `${stats.tier2Plus} required Tier 2+ response. ` : "No Tier 2+ incidents. "}
-              {stats.outsideElectorate > 0 ? `${stats.outsideElectorate} from outside the electorate. ` : ""}
-              {stats.needFollowUp > 0 ? `${stats.needFollowUp} flagged for MP follow-up.` : "No pending follow-ups."}
-            </div>
-          </div>
+          <div style={S.briefingBox}><div style={S.briefingTitle}>MP Briefing Summary</div><div style={S.briefingText}>This week: {stats.weekCount} contacts. {stats.tier2Plus > 0 ? `${stats.tier2Plus} Tier 2+. ` : "No Tier 2+. "}{stats.outsideElectorate > 0 ? `${stats.outsideElectorate} outside electorate. ` : ""}{stats.needFollowUp > 0 ? `${stats.needFollowUp} for MP follow-up.` : "No pending follow-ups."}</div></div>
         </div>
       )}
 
+      {/* SETTINGS */}
       {view === "settings" && (
         <div style={S.card}>
+          <div style={S.dashSecTitle}>Signed in as</div>
+          <div style={{ ...S.connectedBox, marginBottom: 20 }}>
+            <div style={S.userAvatar}>{userInitials}</div>
+            <div><div style={{ fontWeight: 600 }}>{userName}</div><div style={{ fontSize: 12, color: "#64748b" }}>{user?.email}</div></div>
+          </div>
           <div style={S.dashSecTitle}>Manage Campaigns</div>
-          <p style={S.settingsHint}>Add new pressure campaigns as they emerge. Changes sync across all staff in real time.</p>
-          <div style={S.campaignList}>
-            {campaigns.map((c) => (
-              <div key={c.id} style={S.campaignRow}>
-                <span style={{ ...S.campaignDot, background: c.active ? "#2d6a4f" : "#94a3b8" }} />
-                <span style={S.campaignName}>{c.name}</span>
-                <span style={S.campaignStatus}>{c.active ? "Active" : "Archived"}</span>
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <input id="new-camp" style={S.input} placeholder='e.g. "Immigration Policy (May 2026)"' />
-            <button style={S.submitBtn} onClick={() => {
-              const input = document.getElementById("new-camp");
-              if (input.value.trim()) { addCampaign(input.value.trim()); input.value = ""; }
-            }}>Add</button>
-          </div>
+          <p style={S.settingsHint}>Changes sync across all staff in real time.</p>
+          <div style={S.campaignList}>{campaigns.map((c) => (<div key={c.id} style={S.campaignRow}><span style={{ ...S.campaignDot, background: c.active ? "#2d6a4f" : "#94a3b8" }} /><span style={S.campaignName}>{c.name}</span><span style={S.campaignStatus}>{c.active ? "Active" : "Archived"}</span></div>))}</div>
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}><input id="new-camp" style={S.input} placeholder='e.g. "Immigration Policy (May 2026)"' /><button style={S.submitBtn} onClick={() => { const input = document.getElementById("new-camp"); if (input.value.trim()) { addCampaign(input.value.trim()); input.value = ""; } }}>Add</button></div>
           <div style={{ ...S.dashSecTitle, marginTop: 32 }}>Data</div>
-          <p style={S.settingsHint}>Export all logged contacts for briefing documents or records management.</p>
           <button style={S.exportBtn} onClick={exportCSV}>Export All Contacts as CSV</button>
-          <div style={{ ...S.dashSecTitle, marginTop: 32 }}>Database Status</div>
-          <div style={S.connectedBox}>
-            <span style={S.connectedDot} /> Connected to Supabase — real-time sync active across all devices
-          </div>
+          <div style={{ ...S.dashSecTitle, marginTop: 32 }}>Session</div>
+          <button style={{ ...S.exportBtn, color: "#991b1b", borderColor: "#fecaca" }} onClick={handleLogout}>Sign Out</button>
         </div>
       )}
     </div>
   );
 }
 
+// ============================================================
+// STYLES
+// ============================================================
 const S = {
   container: { fontFamily: "'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif", maxWidth: 960, margin: "0 auto", padding: "16px 16px 40px", color: "#1e293b", fontSize: 14, position: "relative" },
   loadingWrap: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "60vh" },
@@ -762,6 +642,20 @@ const S = {
   loadingText: { color: "#64748b", fontSize: 14 },
   errorBox: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 8, padding: 24, textAlign: "center", color: "#991b1b", maxWidth: 400 },
   toast: { position: "fixed", top: 16, right: 16, background: "#1e293b", color: "#fff", padding: "10px 20px", borderRadius: 6, fontSize: 13, zIndex: 999, boxShadow: "0 4px 12px rgba(0,0,0,0.15)" },
+
+  // Login
+  loginWrap: { display: "flex", justifyContent: "center", alignItems: "center", minHeight: "100vh", background: "#f1f5f9", padding: 16 },
+  loginCard: { background: "#fff", borderRadius: 12, padding: 32, width: "100%", maxWidth: 380, boxShadow: "0 4px 24px rgba(0,0,0,0.08)", border: "1px solid #e2e8f0" },
+  loginHeader: { display: "flex", alignItems: "center", gap: 12, marginBottom: 20 },
+  loginTitle: { fontSize: 18, fontWeight: 700, color: "#0f172a", letterSpacing: "-0.02em" },
+  loginSubtitle: { fontSize: 12, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" },
+  loginDivider: { height: 1, background: "#e2e8f0", margin: "0 0 20px" },
+  loginLabel: { fontSize: 13, color: "#64748b", marginBottom: 16 },
+  loginField: { marginBottom: 14, display: "flex", flexDirection: "column", gap: 5 },
+  loginError: { background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6, padding: "8px 12px", fontSize: 13, color: "#991b1b", marginBottom: 4 },
+  loginFooter: { marginTop: 20, fontSize: 12, color: "#94a3b8", textAlign: "center", lineHeight: 1.4 },
+
+  // Header
   header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 0 12px", borderBottom: "2px solid #1e293b", flexWrap: "wrap", gap: 12 },
   headerLeft: { display: "flex", alignItems: "center", gap: 12 },
   logoMark: { width: 38, height: 38, background: "#1e293b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 800, fontSize: 14, letterSpacing: 1, borderRadius: 4, flexShrink: 0 },
@@ -769,10 +663,16 @@ const S = {
   headerSub: { fontSize: 11, color: "#64748b", letterSpacing: "0.02em", textTransform: "uppercase", marginTop: 1 },
   syncBadge: { color: "#e77c05", fontWeight: 600 },
   liveBadge: { color: "#2d6a4f", fontWeight: 600 },
-  headerRight: { display: "flex", gap: 8 },
+  headerRight: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
   statPill: { background: "#f1f5f9", padding: "6px 12px", borderRadius: 20, fontSize: 12, color: "#475569", display: "flex", alignItems: "center", gap: 4 },
   statPillWarn: { background: "#fef3c7", color: "#92400e" },
   statNum: { fontWeight: 700, fontSize: 16 },
+  userPill: { display: "flex", alignItems: "center", gap: 6, background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 20, padding: "4px 8px 4px 4px" },
+  userAvatar: { width: 28, height: 28, borderRadius: "50%", background: "#1e293b", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, letterSpacing: "0.02em", flexShrink: 0 },
+  userName: { fontSize: 12, fontWeight: 500, color: "#374151", maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  logoutBtn: { background: "none", border: "none", cursor: "pointer", fontSize: 14, color: "#94a3b8", padding: "0 2px", lineHeight: 1 },
+
+  // Nav + common
   nav: { display: "flex", gap: 0, borderBottom: "1px solid #e2e8f0", marginBottom: 20, overflowX: "auto" },
   navBtn: { flex: "1 0 auto", padding: "12px 8px", border: "none", borderBottom: "2px solid transparent", background: "none", cursor: "pointer", fontSize: 13, color: "#64748b", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 5, whiteSpace: "nowrap" },
   navBtnActive: { color: "#0f172a", borderBottomColor: "#1e293b", fontWeight: 700 },
@@ -874,6 +774,6 @@ const S = {
   campaignDot: { width: 8, height: 8, borderRadius: "50%" },
   campaignName: { fontSize: 14, fontWeight: 500, flex: 1 },
   campaignStatus: { fontSize: 11, color: "#94a3b8", textTransform: "uppercase" },
-  connectedBox: { padding: "12px 16px", background: "#d8f3dc", borderRadius: 6, fontSize: 13, color: "#2d6a4f", fontWeight: 500, display: "flex", alignItems: "center", gap: 8 },
+  connectedBox: { padding: "12px 16px", background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 6, fontSize: 13, color: "#374151", display: "flex", alignItems: "center", gap: 12 },
   connectedDot: { width: 8, height: 8, borderRadius: "50%", background: "#2d6a4f", flexShrink: 0 },
 };
