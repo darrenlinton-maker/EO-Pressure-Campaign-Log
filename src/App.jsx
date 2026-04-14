@@ -189,6 +189,7 @@ function MainApp({ session }) {
   const [toast, setToast] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [playbookTab, setPlaybookTab] = useState("phone");
+  const [pbFilterCampaign, setPbFilterCampaign] = useState("all");
   const [editingPlaybookId, setEditingPlaybookId] = useState(null);
   const [editingPlaybookText, setEditingPlaybookText] = useState("");
   const [expandedScript, setExpandedScript] = useState(null);
@@ -447,10 +448,11 @@ function MainApp({ session }) {
     { key: "dashboard", label: "Dashboard", icon: "◫" },
     { key: "settings", label: "Settings", icon: "⚙" },
   ];
+  const filterPB = (items) => pbFilterCampaign === "all" ? items : items.filter((p) => !p.campaign || p.campaign === pbFilterCampaign);
   const playbookSections = [
-    { key: "phone", label: "Phone Scripts", data: playbook.phoneScripts, section: "phoneScripts" },
-    { key: "email", label: "Email Templates", data: playbook.emailTemplates, section: "emailTemplates" },
-    { key: "talking", label: "Talking Points", data: playbook.talkingPoints, section: "talkingPoints" },
+    { key: "phone", label: "Phone Scripts", data: filterPB(playbook.phoneScripts), allCount: playbook.phoneScripts.length, section: "phoneScripts" },
+    { key: "email", label: "Email Templates", data: filterPB(playbook.emailTemplates), allCount: playbook.emailTemplates.length, section: "emailTemplates" },
+    { key: "talking", label: "Talking Points", data: filterPB(playbook.talkingPoints), allCount: playbook.talkingPoints.length, section: "talkingPoints" },
   ];
   const currentPBSection = playbookSections.find((s) => s.key === playbookTab);
 
@@ -584,7 +586,15 @@ function MainApp({ session }) {
       {/* ==================== PLAYBOOK ==================== */}
       {view === "playbook" && (
         <div>
-          <div style={S.pbNav}>{playbookSections.map((s) => (<button key={s.key} onClick={() => { setPlaybookTab(s.key); setEditingPlaybookId(null); }} style={{ ...S.pbNavBtn, ...(playbookTab === s.key ? S.pbNavBtnActive : {}) }}>{s.label}<span style={S.pbNavCount}>{s.data.length}</span></button>))}</div>
+          <div style={S.pbNav}>{playbookSections.map((s) => (<button key={s.key} onClick={() => { setPlaybookTab(s.key); setEditingPlaybookId(null); }} style={{ ...S.pbNavBtn, ...(playbookTab === s.key ? S.pbNavBtnActive : {}) }}>{s.label}<span style={S.pbNavCount}>{s.data.length}{pbFilterCampaign !== "all" && s.data.length !== s.allCount ? `/${s.allCount}` : ""}</span></button>))}</div>
+          <div style={S.pbFilterRow}>
+            <label style={S.pbFilterLabel}>Show:</label>
+            <select style={S.filterSel} value={pbFilterCampaign} onChange={(e) => setPbFilterCampaign(e.target.value)}>
+              <option value="all">All campaigns + general</option>
+              {campaigns.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+            {pbFilterCampaign !== "all" && <span style={S.pbFilterHint}>Also showing general-use items (not tied to a campaign)</span>}
+          </div>
           {currentPBSection.data.map((item) => {
             const isExpanded = expandedScript === item.id;
             const isEditing = editingPlaybookId === item.id;
@@ -797,7 +807,10 @@ const S = {
   cancelBtn: { padding: "10px 20px", background: "#f1f5f9", color: "#475569", border: "1px solid #d1d5db", borderRadius: 6, fontSize: 14, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" },
   tier3Warn: { marginTop: 16, padding: "14px 18px", background: "#fef2f2", border: "2px solid #dc2626", borderRadius: 6, color: "#991b1b", fontSize: 13, lineHeight: 1.5 },
   scriptLink: { marginTop: 12, padding: "10px 14px", background: "#eff6ff", borderRadius: 6, color: "#1d4ed8", fontSize: 13, cursor: "pointer", fontWeight: 500, textAlign: "center" },
-  pbNav: { display: "flex", gap: 0, borderBottom: "1px solid #e2e8f0", marginBottom: 16 },
+  pbNav: { display: "flex", gap: 0, borderBottom: "1px solid #e2e8f0", marginBottom: 0 },
+  pbFilterRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0 14px", flexWrap: "wrap" },
+  pbFilterLabel: { fontSize: 12, fontWeight: 600, color: "#64748b", textTransform: "uppercase", letterSpacing: "0.04em" },
+  pbFilterHint: { fontSize: 11, color: "#94a3b8", fontStyle: "italic" },
   pbNavBtn: { flex: 1, padding: "10px 8px", border: "none", borderBottom: "2px solid transparent", background: "none", cursor: "pointer", fontSize: 13, color: "#64748b", fontWeight: 500, display: "flex", alignItems: "center", justifyContent: "center", gap: 6 },
   pbNavBtnActive: { color: "#0f172a", borderBottomColor: "#1e293b", fontWeight: 700 },
   pbNavCount: { background: "#f1f5f9", padding: "1px 7px", borderRadius: 10, fontSize: 11, fontWeight: 700, color: "#475569" },
